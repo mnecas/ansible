@@ -270,6 +270,17 @@ options:
             - Name of the storage domain this virtual machine lease reside on.
             - NOTE - Supported since oVirt 4.1.
         version_added: "2.4"
+    
+    host_devices:
+        description:
+            - Single Root I/O Virtualization - technology that allows single device to expose multiple endpoints that can be passed to VMs
+            - PF - Physical Function - refers to a physical device (possibly supporting SR-IOV)
+            - VF - Virtual Function - virtual function exposed by SR-IOV capable device
+            - IOMMU group - unit of isolation created by the kernel IOMMU driver. Each IOMMU group is isolated from other IOMMU groups with respect to DMA. For our purposes, IOMMU groups are a set of PCI devices which may span multiple PCI buses.
+            - VFIO[2] - Virtual Function I/O - virtualization device driver, replacement of the pci-stub driver
+            - mdev - mediated devices - devices that are capable of creating and assigning device instances to a VMs (similar to SR-IOV)
+        version_added: "2.7"
+
     delete_protected:
         description:
             - If I(yes) Virtual Machine will be set as delete protected.
@@ -860,6 +871,17 @@ EXAMPLES = '''
       protocol:
         - spice
         - vnc
+
+# When you don't define state it's automaticaly present
+- name: Attach host device to VM
+  host: host
+  host_devices:
+    - name: pci_0000_00_06_0
+    - name: pci_0000_00_07_0
+      state: absent
+    - name: pci_0000_00_08_0
+      state: present
+
 '''
 
 
@@ -1066,6 +1088,10 @@ class VmsModule(BaseModule):
                     self.param('instance_type'),
                 ),
             ) if self.param('instance_type') else None,
+            custom_compatibility_version=otypes.Version(major=self.param('custom_compatibility_version').split(".")[0],
+                                                        minor=self.param('custom_compatibility_version').split(".")[1])
+            if self.param('custom_compatibility_version') else None,
+
             description=self.param('description'),
             comment=self.param('comment'),
             time_zone=otypes.TimeZone(
@@ -1191,6 +1217,7 @@ class VmsModule(BaseModule):
         self.changed = self.__attach_numa_nodes(entity)
         self.changed = self.__attach_watchdog(entity)
         self.changed = self.__attach_graphical_console(entity)
+        self.changed = self.__attach_host_devices(entity)
 
     def pre_remove(self, entity):
         # Forcibly stop the VM, if it's not in DOWN state:
@@ -1232,7 +1259,6 @@ class VmsModule(BaseModule):
     def _post_start_action(self, entity):
         vm_service = self._service.service(entity.id)
         self._wait_for_UP(vm_service)
-        self._attach_cd(vm_service.get())
         self._migrate_vm(vm_service.get())
 
     def _attach_cd(self, entity):
@@ -1582,6 +1608,33 @@ class VmsModule(BaseModule):
             )
         return self._initialization
 
+    def __attach_host_devices(self, entity):
+        vm_service = self._service.service(entity.id)
+        host_devices_service = vm_service.host_devices_service()
+        host_devices = self.param('host_devices')
+        device_names = [dev.name for dev in host_devices_service.list()]          
+        updated = False
+        if host_devices:
+            for device in host_devices:
+                device_name=device.get('name')
+                state = device.get('state', 'present')
+                if state == 'absent' and device_name in device_names:
+                    updated = True
+                    if not self._module.check_mode:
+                        device_id = get_id_by_name(host_devices_service, device.get('name'))
+                        host_devices_service.device_service(device_id).remove()
+
+                elif state == 'present' and device_name not in device_names:
+                    updated = True
+                    if not self._module.check_mode:
+                        host_devices_service.add(
+                            otypes.HostDevice(
+                                name=device.get('name'),
+                            )
+                        )
+
+        return updated
+
 
 def _get_role_mappings(module):
     roleMappings = list()
@@ -1888,6 +1941,7 @@ def main():
         kvm=dict(type='dict'),
         cpu_mode=dict(type='str'),
         placement_policy=dict(type='str'),
+        custom_compatibility_version=dict(type="str"),
         cpu_pinning=dict(type='list'),
         soundcard_enabled=dict(type='bool', default=None),
         smartcard_enabled=dict(type='bool', default=None),
@@ -1898,6 +1952,7 @@ def main():
         numa_nodes=dict(type='list', default=[]),
         custom_properties=dict(type='list'),
         watchdog=dict(type='dict'),
+        host_devices=dict(type='list'),
         graphical_console=dict(type='dict'),
     )
     module = AnsibleModule(
@@ -1939,6 +1994,7 @@ def main():
 
             vms_module.post_present(ret['id'])
             # Run the VM if it was just created, else don't run it:
+            vms_module._attach_cd(vm)
             if state == 'running':
                 initialization = vms_module.get_initialization()
                 ret = vms_module.action(
