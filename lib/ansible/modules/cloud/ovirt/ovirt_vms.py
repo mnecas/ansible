@@ -280,6 +280,13 @@ options:
             - VFIO[2] - Virtual Function I/O - virtualization device driver, replacement of the pci-stub driver
             - mdev - mediated devices - devices that are capable of creating and assigning device instances to a VMs (similar to SR-IOV)
         version_added: "2.7"
+        
+    custom_compatibility_version:
+        description:
+            - * Enables a virtual machine to be customized to its own compatibility version.  If
+            `custom_compatibility_version` is set, it overrides the cluster's compatibility version
+            for this particular virtual machine.
+        version_added: "2.7"
 
     delete_protected:
         description:
@@ -872,9 +879,10 @@ EXAMPLES = '''
         - spice
         - vnc
 
-# When you don't define state it's automaticaly present
+# Default value of state is present
 - name: Attach host device to VM
   host: host
+  placement_policy: pinned
   host_devices:
     - name: pci_0000_00_06_0
     - name: pci_0000_00_07_0
@@ -1088,8 +1096,8 @@ class VmsModule(BaseModule):
                     self.param('instance_type'),
                 ),
             ) if self.param('instance_type') else None,
-            custom_compatibility_version=otypes.Version(major=self.param('custom_compatibility_version').split(".")[0],
-                                                        minor=self.param('custom_compatibility_version').split(".")[1])
+            custom_compatibility_version=otypes.Version(major=int(self.param('custom_compatibility_version').split(".")[0]),
+                                                        minor=int(self.param('custom_compatibility_version').split(".")[1]))
             if self.param('custom_compatibility_version') else None,
 
             description=self.param('description'),
@@ -1179,6 +1187,8 @@ class VmsModule(BaseModule):
             equal(self.param('io_threads'), entity.io.threads) and
             equal(self.param('ballooning_enabled'), entity.memory_policy.ballooning) and
             equal(self.param('serial_console'), entity.console.enabled) and
+            equal(self._get_minor(self.param('custom_compatibility_version')), self._get_minor(entity.custom_compatibility_version)) and
+            equal(self._get_major(self.param('custom_compatibility_version')), self._get_major(entity.custom_compatibility_version)) and
             equal(self.param('usb_support'), entity.usb.enabled) and
             equal(self.param('sso'), True if entity.sso.methods else False) and
             equal(self.param('quota_id'), getattr(entity.quota, 'id', None)) and
@@ -1612,11 +1622,11 @@ class VmsModule(BaseModule):
         vm_service = self._service.service(entity.id)
         host_devices_service = vm_service.host_devices_service()
         host_devices = self.param('host_devices')
-        device_names = [dev.name for dev in host_devices_service.list()]          
         updated = False
         if host_devices:
+            device_names = [dev.name for dev in host_devices_service.list()]
             for device in host_devices:
-                device_name=device.get('name')
+                device_name = device.get('name')
                 state = device.get('state', 'present')
                 if state == 'absent' and device_name in device_names:
                     updated = True
@@ -1941,7 +1951,7 @@ def main():
         kvm=dict(type='dict'),
         cpu_mode=dict(type='str'),
         placement_policy=dict(type='str'),
-        custom_compatibility_version=dict(type="str"),
+        custom_compatibility_version=dict(type='str'),
         cpu_pinning=dict(type='list'),
         soundcard_enabled=dict(type='bool', default=None),
         smartcard_enabled=dict(type='bool', default=None),
