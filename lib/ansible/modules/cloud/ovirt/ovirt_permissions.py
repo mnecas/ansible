@@ -126,6 +126,7 @@ from ansible.module_utils.ovirt import (
     ovirt_full_argument_spec,
     search_by_attributes,
     search_by_name,
+    get_id_by_name
 )
 
 
@@ -138,6 +139,12 @@ def _objects_service(connection, object_type):
         '%ss_service' % object_type,
         None,
     )()
+
+
+def _quotas_permissions_service(connection, module):
+    quotas_service = _object_service(connection, module).quotas_service()
+    quota_service = quotas_service.quota_service(get_id_by_name(quotas_service, module.params['quota_consumer']))
+    return quota_service.permissions_service()
 
 
 def _object_service(connection, module):
@@ -248,6 +255,7 @@ def main():
         user_name=dict(type='str'),
         group_name=dict(type='str'),
         namespace=dict(type='str'),
+        quota_consumer=dict(type='str'),
     )
     module = AnsibleModule(
         argument_spec=argument_spec,
@@ -275,6 +283,8 @@ def main():
         state = module.params['state']
         if state == 'present':
             ret = permissions_module.create(entity=permission)
+            if module.params['quota_consumer']:
+                ret = _quotas_permissions_service(connection, module).add(ret)
         elif state == 'absent':
             ret = permissions_module.remove(entity=permission)
 
